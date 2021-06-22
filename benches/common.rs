@@ -6,6 +6,7 @@ use merino::*;
 
 #[bench]
 fn bench_pow(b: &mut Bencher) {
+
     // Optionally include some setup
     let x: f64 = 211.0 * 11.0;
     let y: f64 = 301.0 * 103.0;
