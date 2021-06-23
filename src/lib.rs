@@ -1,7 +1,10 @@
 #![forbid(unsafe_code)]
 #[macro_use] extern crate serde_derive;
 #[macro_use] extern crate log;
+mod socks4;
+
 use snafu::{Snafu};
+
 
 use std::io::prelude::*;
 use std::io::copy;
@@ -9,6 +12,21 @@ use std::error::Error;
 use std::net::{Shutdown, TcpStream, TcpListener, SocketAddr, SocketAddrV4, SocketAddrV6, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
 use std::{thread};
 
+enum SocksVersion {
+    SocksV4 = 0x04,
+    SocksV5 = 0x05,
+    Unknown,
+}
+
+impl From<u8> for SocksVersion {
+    fn from(orig: u8) -> Self {
+        match orig {
+            0x04 => SocksVersion::SocksV4,
+            0x05 => SocksVersion::SocksV5,
+            _ => SocksVersion::Unknown,
+        }
+    }
+}
 
 /// Version of socks
 const SOCKS_VERSION: u8 = 0x05;
@@ -205,27 +223,60 @@ impl SOCKClient {
 
     fn init(&mut self) -> Result<(), Box<dyn Error>> {
         debug!("New connection from: {}", self.stream.peer_addr()?.ip());
-        let mut header = [0u8; 2];
-        // Read a byte from the stream and determine the version being requested
-        self.stream.read_exact(&mut header)?;
-
+        let mut header = [0u8; 1];
+        // peak into the stream just viewing the  value of the first byte to determine what
+        // version of socks this is.
+        self.stream.peek(&mut header)?;
         self.socks_version = header[0];
-        self.auth_nmethods = header[1];
+
+
+        //self.auth_nmethods = header[1];
 
         trace!("Version: {} Auth nmethods: {}", self.socks_version, self.auth_nmethods);
 
-        // Handle SOCKS4 requests
-        if header[0] != SOCKS_VERSION {
-            warn!("Init: Unsupported version: SOCKS{}", self.socks_version);
-            self.shutdown()?;
+        // match protocol
+       match header[0].into() {
+            SocksVersion::SocksV4 => {
+                // handle sock version 4
+                // note the time will get the tcp stream we already
+                // know it is an Sock4 request
+                let mut sock4request: socks4::Sock4Request = socks4::Sock4Request::deserialize(&mut self.stream)?;
+
+                // TODO: properly structure the code (structs and functions)
+                socks4::handle_sock4_client(&mut sock4request, &mut self.stream)?;
+            },
+            SocksVersion::SocksV5 => {
+                // TODO: better implementation instead of repeating
+                // DRY up the code
+                let mut header = [0u8; 2];
+                self.stream.read_exact(&mut header)?;
+
+                self.auth_nmethods = header[1];
+
+                // handle soock version 5
+                // Authenticate w/ client
+                self.auth()?;
+                // Handle requests
+                self.handle_client()?;
+            },
+            _ => {
+                warn!("Init: Unsupported version: SOCKS{}", self.socks_version);
+                self.shutdown()?;
+            }
         }
-        // Valid SOCKS5
-        else {
-            // Authenticate w/ client
-            self.auth()?;
-            // Handle requests
-            self.handle_client()?;
-        }
+
+        // should be deleted
+        // if header[0] != SOCKS_VERSION {
+        //     let mut sock4_req = socks4::Sock4Request::deserialize(&mut self.stream)?;
+        //     socks4::handle_sock4_client(&mut sock4_req, &mut self.stream)?;
+        // }
+        // // Valid SOCKS5
+        // else {
+        //     // Authenticate w/ client
+        //     self.auth()?;
+        //     // Handle requests
+        //     self.handle_client()?;
+        // }
 
         Ok(())
     }
